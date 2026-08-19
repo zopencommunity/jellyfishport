@@ -1,0 +1,260 @@
+# bump: jellyfish-version /JELLYFISH_VERSION="(.*)"/ https://github.com/jamesturk/jellyfish.git|semver:*
+JELLYFISH_VERSION="1.2.1"
+
+###
+### Build control file for jellyfishport
+###
+### jellyfish is a Python library for approximate and phonetic matching of strings,
+### with a Rust core (pyo3 0.29). It cannot be compiled natively on z/OS (no
+### native Rust toolchain). Prebuilt wheels are cross-compiled on Linux-on-Power (LoP)
+### using IBM's Rust cross-compiler targeting s390x-ibm-zos and uploaded as
+### release assets on this port's GitHub repo.
+###
+### Cross-compilation infrastructure:
+###   https://github.ibm.com/compiler/rust-scripts  branch itodorov/zos-cross-compile-setup
+###
+
+export ZOPEN_PROJECT_NAME="jellyfish"
+export ZOPEN_BUILD_LINE="STABLE"
+export ZOPEN_TYPE="BARE"
+export ZOPEN_STABLE_TYPE="BARE"
+export ZOPEN_DEV_TYPE="BARE"
+export ZOPEN_STABLE_URL="https://github.com/jamesturk/jellyfish.git"
+export ZOPEN_STABLE_TAG="v${JELLYFISH_VERSION}"
+export ZOPEN_DEV_URL="https://github.com/jamesturk/jellyfish.git"
+export ZOPEN_STABLE_DEPS="check_python curl"
+export ZOPEN_DEV_DEPS="check_python curl"
+export ZOPEN_CATEGORIES="development library"
+export ZOPEN_RUNTIME_DEPS="check_python"
+
+export ZOPEN_BUILD_SYSTEM="Python"
+export ZOPEN_BOOTSTRAP="skip"
+export ZOPEN_CONFIGURE="skip"
+export ZOPEN_COMP="skip"
+export ZOPEN_MAKE="zopen_custom_build"
+
+WHEEL_BASE_URL="https://github.com/zopencommunity/jellyfishport/releases/download/v${JELLYFISH_VERSION}"
+
+zopen_get_version() {
+  echo "${JELLYFISH_VERSION}"
+}
+
+# Ask the interpreter for its platform tag; fall back to known tags.
+_jellyfish_platform_tags() {
+  _pt_local=$("$(_zopen_python_interpreter_path "$1")" -c \
+    'import sysconfig; print(sysconfig.get_platform().replace("-","_").replace(".","_"))' \
+    2>/dev/null)
+  echo "${_pt_local} zos os390_29_00_8561"
+}
+
+zopen_init() {
+  mkdir -p wheels || return 1
+
+  for _pv in $(_zopen_python_versions); do
+    _tag="cp$(echo "${_pv}" | tr -d '.')"
+
+    _have=""
+    for _cand in wheels/jellyfish-${JELLYFISH_VERSION}-${_tag}-${_tag}-*.whl; do
+      [ -f "${_cand}" ] && { _have="${_cand}"; break; }
+    done
+    [ -n "${_have}" ] && { printInfo "Already have ${_have##*/}"; continue; }
+
+    _tried=""
+    _got=""
+    for _plat in $(_jellyfish_platform_tags "${_pv}"); do
+      case " ${_tried} " in *" ${_plat} "*) continue ;; esac
+      _tried="${_tried} ${_plat}"
+      _whl="jellyfish-${JELLYFISH_VERSION}-${_tag}-${_tag}-${_plat}.whl"
+      if curl -fsSL -o "wheels/${_whl}" "${WHEEL_BASE_URL}/${_whl}" 2>/dev/null; then
+        printInfo "Fetched ${_whl}"
+        chtag -b "wheels/${_whl}"
+        _got="${_whl}"
+        break
+      fi
+      rm -f "wheels/${_whl}"
+    done
+
+    if [ -z "${_got}" ]; then
+      printSoftError "No prebuilt wheel for Python ${_pv} at ${WHEEL_BASE_URL}"
+      printSoftError "Tried platform tags:${_tried}"
+      return 1
+    fi
+  done
+}
+
+_jellyfish_venv_for() {
+  _jv_vd=$(_zopen_python_venv_dir "$1")
+  if [ ! -f "${_jv_vd}/bin/activate" ]; then
+    printInfo "Creating venv for ${1} in ${_jv_vd}"
+    "$(_zopen_python_interpreter_path "$1")" -m venv --system-site-packages "${_jv_vd}" || return 1
+  fi
+  . "${_jv_vd}/bin/activate" || return 1
+  pip install --disable-pip-version-check --quiet setuptools build installer wheel
+}
+
+zopen_custom_build() {
+  _zopen_python_verify_interpreters || return 1
+
+  rm -rf dist
+  mkdir -p dist || return 1
+
+  for _pv in $(_zopen_python_versions); do
+    _jellyfish_venv_for "${_pv}" || return 1
+    _tag="cp$(echo "${_pv}" | tr -d '.')"
+
+    _src=""
+    for _cand in wheels/jellyfish-${JELLYFISH_VERSION}-${_tag}-${_tag}-*.whl; do
+      [ -f "${_cand}" ] && { _src="${_cand}"; break; }
+    done
+    if [ -z "${_src}" ]; then
+      printSoftError "No wheel staged for Python ${_pv} in wheels/"
+      deactivate
+      return 1
+    fi
+    cp "${_src}" dist/ || { deactivate; return 1; }
+    printInfo "Staged $(basename "${_src}") for Python ${_pv}"
+    deactivate
+  done
+
+  _jellyfish_venv_for "$(_zopen_python_primary_version)" || return 1
+  _zopen_python_retag_wheel
+  _rc=$?
+  deactivate
+  return ${_rc}
+}
+
+zopen_python_test() {
+  python - <<'PYEOF'
+import sys, os, tempfile
+
+# Change working directory to tempdir and remove cwd from path to avoid shadowing
+os.chdir(tempfile.gettempdir())
+sys.path = [p for p in sys.path if p not in ('', '.', os.getcwd())]
+
+failures = 0
+total = 0
+
+def check(label, fn):
+    global failures, total
+    total += 1
+    try:
+        if fn():
+            print("PASS:", label)
+        else:
+            print("FAIL:", label, file=sys.stderr)
+            failures += 1
+    except Exception as exc:
+        print("FAIL:", label, "-", exc, file=sys.stderr)
+        failures += 1
+
+try:
+    import jellyfish
+    from jellyfish import _rustyfish, _jellyfish
+except ImportError as exc:
+    print("FAIL: import jellyfish -", exc, file=sys.stderr)
+    sys.exit(1)
+
+check("import jellyfish", lambda: True)
+check("import _rustyfish", lambda: hasattr(_rustyfish, 'levenshtein_distance'))
+check("import _jellyfish", lambda: hasattr(_jellyfish, 'levenshtein_distance'))
+
+# Levenshtein distance
+check("levenshtein_distance identical", lambda: jellyfish.levenshtein_distance("hello", "hello") == 0)
+check("levenshtein_distance edit", lambda: jellyfish.levenshtein_distance("hello", "hallo") == 1)
+check("levenshtein_distance empty", lambda: jellyfish.levenshtein_distance("", "hello") == 5)
+
+# Damerau-Levenshtein distance
+check("damerau_levenshtein_distance transposition", lambda: jellyfish.damerau_levenshtein_distance("ab", "ba") == 1)
+check("damerau_levenshtein_distance insert/delete", lambda: jellyfish.damerau_levenshtein_distance("abc", "ac") == 1)
+
+# Jaro & Jaro-Winkler similarity
+check("jaro_similarity exact", lambda: abs(jellyfish.jaro_similarity("dwayne", "duane") - 0.822) < 0.01)
+check("jaro_winkler_similarity exact", lambda: abs(jellyfish.jaro_winkler_similarity("shackleford", "shackelford") - 0.982) < 0.01)
+check("jaro_winkler_similarity long tolerance", lambda: abs(jellyfish.jaro_winkler_similarity("two long strings", "two long stringz", True) - 0.984) < 0.01)
+
+# Hamming distance
+check("hamming_distance equal length", lambda: jellyfish.hamming_distance("karolin", "kathrin") == 3)
+
+# Soundex
+check("soundex Robert", lambda: jellyfish.soundex("Robert") == "R163")
+check("soundex Rupert", lambda: jellyfish.soundex("Rupert") == "R163")
+check("soundex Ashcraft", lambda: jellyfish.soundex("Ashcraft") == "A261")
+
+# Metaphone
+check("metaphone Knight", lambda: jellyfish.metaphone("Knight") == "NT")
+check("metaphone Wright", lambda: jellyfish.metaphone("Wright") == "RT")
+
+# NYSIIS
+check("nysiis Knight", lambda: jellyfish.nysiis("Knight") == "NAGHT")
+check("nysiis Capistrano", lambda: jellyfish.nysiis("Capistrano") == "CAPASTRAN")
+
+# Match Rating Approach
+check("match_rating_codex", lambda: jellyfish.match_rating_codex("Smith") == "SMTH")
+check("match_rating_comparison true", lambda: jellyfish.match_rating_comparison("Smith", "Smyth") is True)
+check("match_rating_comparison false", lambda: jellyfish.match_rating_comparison("Smith", "Jones") is False)
+
+# Jaccard similarity
+check("jaccard_similarity identical", lambda: jellyfish.jaccard_similarity("abc", "abc") == 1.0)
+check("jaccard_similarity disjoint", lambda: jellyfish.jaccard_similarity("abc", "xyz") == 0.0)
+
+# Exception handling
+def test_type_error():
+    try:
+        jellyfish.levenshtein_distance(b"abc", b"abc")
+        return False
+    except TypeError:
+        return True
+
+def test_value_error():
+    try:
+        jellyfish.match_rating_codex("i'm")
+        return False
+    except ValueError:
+        return True
+
+check("type error handling", test_type_error)
+check("value error handling", test_value_error)
+
+print()
+print("jellyfish on Python %s  --  %d passed, %d failed" % (
+    sys.version.split()[0], total - failures, failures))
+sys.exit(1 if failures else 0)
+PYEOF
+}
+
+zopen_check_results() {
+  dir="$1"; pfx="$2"; chk="${dir}/${pfx}_check.log"
+  passed=$(grep -c "^PASS:" "${chk}" 2>/dev/null); passed=${passed:-0}
+  failed=$(grep -c "^FAIL:" "${chk}" 2>/dev/null); failed=${failed:-0}
+  total=$((passed + failed))
+
+  interpreters=$(grep -c "^jellyfish on Python" "${chk}" 2>/dev/null); interpreters=${interpreters:-0}
+  expected=$(echo "${ZOPEN_PYTHON_VERSIONS:-3.12 3.13 3.14}" | wc -w | tr -d ' ')
+  if [ "${interpreters}" -lt "${expected}" ]; then
+    silent=$((expected - interpreters))
+    failed=$((failed + silent))
+    total=$((total + silent))
+  fi
+
+  echo "actualFailures:${failed}"
+  echo "totalTests:${total}"
+  echo "expectedFailures:0"
+}
+
+zopen_post_install() {
+  for _so in "${ZOPEN_INSTALL_DIR}"/lib/python/jellyfish/*.so; do
+    [ -f "${_so}" ] && chmod +x "${_so}"
+  done
+  return 0
+}
+
+zopen_append_to_env() {
+  cat <<'ZZ'
+PYTHONPATH="${PYTHONPATH}:${PWD}/lib/python"
+export PYTHONPATH="$(deleteDuplicateEntries "$PYTHONPATH" ":")"
+ZZ
+}
+
+zopen_append_to_validate_install() {
+  echo "python3 -c \"import jellyfish; print('jellyfish levenshtein:', jellyfish.levenshtein_distance('cat', 'hat'))\""
+}
