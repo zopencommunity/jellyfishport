@@ -185,7 +185,7 @@ check("metaphone Knight", lambda: jellyfish.metaphone("Knight") == "NT")
 check("metaphone Wright", lambda: jellyfish.metaphone("Wright") == "RT")
 
 # NYSIIS
-check("nysiis Knight", lambda: jellyfish.nysiis("Knight") == "NAGHT")
+check("nysiis Knight", lambda: jellyfish.nysiis("Knight") == "NAGT")
 check("nysiis Capistrano", lambda: jellyfish.nysiis("Capistrano") == "CAPASTRAN")
 
 # Match Rating Approach
