@@ -1,0 +1,15 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -8,7 +8,7 @@ readme = "README.md"
+ 
+ [lib]
+-name = "jellyfish"
++name = "_rustyfish"
+ crate-type = ["cdylib"]
+ 
+ [dependencies]
+@@ -21,3 +21,4 @@ csv = "1.1"
+ 
+ [features]
++default = ["python"]
+ python = []
