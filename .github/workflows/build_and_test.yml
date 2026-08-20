@@ -22,6 +22,6 @@ jobs:
     if: (github.event.issue.pull_request && contains(github.event.comment.body, '/run tests')) || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request_target'
     uses: zopencommunity/meta/.github/workflows/build_and_test.yml@main
     with:
-      repo: ${{ github.repository }}
+      repo: https://github.com/${{ github.repository }}.git
       branch: ${{ github.ref_name }}
     secrets: inherit
